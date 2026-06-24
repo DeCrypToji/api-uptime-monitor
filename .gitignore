@@ -1,0 +1,76 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment variables (NEVER commit these!)
+.env
+.env.local
+.env.*.local
+
+# Terraform (from Project 1 patterns)
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# AWS credentials (never commit!)
+~/.aws/credentials
+aws_credentials.txt
+
+# Logs
+*.log
+logs/
+
+# Node modules (if React is in same repo)
+node_modules/
+.next/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Misc
+.venv
+venv/
+ENV/
