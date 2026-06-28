@@ -55,6 +55,7 @@ func main() {
 		v1.PATCH("/endpoints/:id", authMiddleware(), updateEndpointHandler)
 		v1.DELETE("/endpoints/:id", authMiddleware(), deleteEndpointHandler)
 
+		v1.POST("/endpoints/:id/check", authMiddleware(), checkEndpointHealthHandler)
 		v1.GET("/endpoints/:id/health", authMiddleware(), getHealthChecksHandler)
 
 		v1.GET("/status/:slug", getStatusPageHandler)
