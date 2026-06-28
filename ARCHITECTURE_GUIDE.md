@@ -8,6 +8,7 @@
 5. Authentication Flow
 6. Common Failure Points
 7. Debugging Guide
+8. Health Check System (Phase 2)
 
 ---
 
@@ -1006,3 +1007,190 @@ When something breaks:
 5. **Fix incrementally:** Don't change 5 things at once
 
 You now understand the entire architecture. 🎯
+
+---
+
+## 8. HEALTH CHECK SYSTEM (Phase 2)
+
+This is the **core feature** of the product. Everything else — alerts, dashboards,
+status pages, uptime percentages — is built on top of the data this system produces.
+
+### 8.1 What a health check actually is
+
+A health check answers one question: **"Is this endpoint behaving the way the user
+expects right now?"**
+
+To answer it, the backend:
+1. Makes a real HTTP request to the endpoint's URL
+2. Times how long the response took
+3. Compares the returned status code to the *expected* status code
+4. Records the verdict (healthy / unhealthy) plus the raw numbers
+5. Stores a permanent time-series record AND updates a fast "latest status" snapshot
+
+### 8.2 The file: `health_check.go`
+
+This file contains four functions. Three do one job each; the fourth orchestrates them.
+
+```
+PerformHealthCheck(endpoint)      → makes the HTTP request, returns a result (no DB)
+SaveHealthCheck(userID, id, res)  → INSERTs the result into health_checks (history)
+UpdateEndpointStatus(id, res)     → UPDATEs the endpoint's "last_*" snapshot columns
+CheckEndpointHealth(userID, ep)   → calls the three above in order
+```
+
+**Why split it like this?**
+- `PerformHealthCheck` has **no database dependency** — it can be unit-tested with any
+  URL and never touches Postgres. Pure input → output.
+- `SaveHealthCheck` and `UpdateEndpointStatus` are the only two that talk to the DB,
+  so if a write fails you know exactly which of the two it was from the error wrapper.
+- `CheckEndpointHealth` is the single public entry point handlers call. Handlers never
+  call the three lower functions directly — they call the orchestrator.
+
+### 8.3 Data flow: triggering a check
+
+```
+User / curl
+  │
+  │  POST /api/v1/endpoints/:id/check
+  │  Authorization: Bearer <jwt>
+  ↓
+authMiddleware()
+  │  ├─ validates JWT signature + expiry
+  │  └─ puts user_id into the request context
+  ↓
+checkEndpointHealthHandler()
+  │  ├─ userID := GetUserID(c)
+  │  ├─ endpointID := c.Param("id")
+  │  ├─ SELECT the endpoint WHERE id = $1 AND user_id = $2
+  │  │     (the user_id filter is what stops you checking someone else's endpoint)
+  │  └─ CheckEndpointHealth(userID, endpoint)
+  ↓
+CheckEndpointHealth()
+  │  ├─ PerformHealthCheck(endpoint)      ──► makes the real HTTP call
+  │  ├─ SaveHealthCheck(userID, id, res)  ──► INSERT row into health_checks
+  │  └─ UpdateEndpointStatus(id, res)     ──► UPDATE endpoints.last_* columns
+  ↓
+200 OK {"message": "health check completed"}
+```
+
+### 8.4 What gets written to the database
+
+**Two writes happen per check, on purpose.**
+
+**Write 1 — `health_checks` table (append-only history):**
+```sql
+INSERT INTO health_checks (
+  id, user_id, endpoint_id, status_code, response_time_ms,
+  is_healthy, error_message, checked_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW());
+```
+Every check ever run is a new row here. This is the **time-series** data that powers
+uptime graphs ("99.95% over 30 days") and incident history. It grows forever (until a
+cleanup job prunes old rows).
+
+**Write 2 — `endpoints` table (latest snapshot, overwritten):**
+```sql
+UPDATE endpoints
+SET last_is_healthy = $1,
+    last_response_time_ms = $2,
+    last_checked_at = NOW(),
+    last_status_code = $3,
+    updated_at = NOW()
+WHERE id = $4;
+```
+This **overwrites** the previous snapshot. It exists purely for dashboard speed: the
+dashboard can show "is this endpoint up right now?" by reading one column on the
+`endpoints` row, instead of running a `MAX(checked_at)` subquery against millions of
+`health_checks` rows.
+
+> This is the **denormalization** pattern from section 4 in action. History lives in
+> `health_checks`; the fast "current state" lookup lives on `endpoints`.
+
+### 8.5 The healthy/unhealthy decision
+
+```go
+result.IsHealthy = (resp.StatusCode == endpoint.ExpectedStatusCode)
+```
+
+That's the whole verdict. If the user said "I expect 200" and the endpoint returns 200,
+it's healthy. If it returns 500, 404, 301 — anything other than the expected code — it's
+unhealthy.
+
+**Failure cases that never even produce a status code:**
+- The request times out (the client has a 10-second timeout)
+- DNS fails / connection refused
+- TLS handshake fails
+
+In all of those, `client.Do(req)` returns an `err`, we set `IsHealthy = false`, and we
+store the error text in `error_message`. The check still "completes" — an endpoint being
+down is a valid, recorded result, not a crash.
+
+### 8.6 Why nullable columns matter here (a real bug we hit)
+
+Before the first check ever runs, an endpoint's `last_is_healthy`, `last_response_time_ms`,
+`last_checked_at`, and `last_status_code` are all **NULL** in the database.
+
+Go's `database/sql` will **refuse** to scan a SQL `NULL` into a plain `bool` or `int`.
+You must scan into a **pointer** (`*bool`, `*int`, `*time.Time`), which can hold `nil`.
+
+```go
+// WRONG — panics/errors the moment a column is NULL:
+var isHealthy bool
+rows.Scan(..., &isHealthy, ...)
+// → "couldn't convert <nil> into type bool"
+
+// RIGHT — a pointer can represent "no value yet":
+var isHealthy *bool
+rows.Scan(..., &isHealthy, ...)
+```
+
+When the JSON is serialized, a `nil` pointer becomes `null` — which is exactly what the
+frontend sees for an endpoint that's never been checked. After the first check, the
+columns are populated and the pointers hold real values.
+
+### 8.7 New failure points introduced by Phase 2
+
+| Symptom | Likely cause | Where to look |
+|---|---|---|
+| `null value in column "user_id"` on check | INSERT missing user_id | `SaveHealthCheck` column list |
+| `couldn't convert <nil> into type bool` | NULL scanned into non-pointer | scan targets in `getEndpointsHandler` |
+| `unsupported Scan ... into *time.Time` | COALESCE forcing a timestamp to text | the SELECT query, remove COALESCE on time columns |
+| `POST .../check` returns 404 | route not registered OR stale server | `main.go` route list + restart backend |
+| check "completes" but `last_is_healthy` still null | wrong endpoint id, or UPDATE silently matched 0 rows | confirm the id, check `UpdateEndpointStatus` WHERE clause |
+
+### 8.8 How to test it manually
+
+```bash
+# 1. Get a fresh token (they expire after 15 min)
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"SecurePass123!"}' \
+  | grep -o '"jwt_token":"[^"]*"' | cut -d'"' -f4)
+
+# 2. Trigger a check
+curl -X POST http://localhost:8000/api/v1/endpoints/<ENDPOINT_ID>/check \
+  -H "Authorization: Bearer $TOKEN"
+# → {"message":"health check completed"}
+
+# 3. Confirm the snapshot updated
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/endpoints/<ENDPOINT_ID>
+# → last_is_healthy: true, last_response_time_ms: 101, last_status_code: 200
+
+# 4. Confirm the history recorded it
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/endpoints/<ENDPOINT_ID>/health
+# → array of every check with timestamps
+```
+
+### 8.9 What's deliberately NOT here yet
+
+Right now checks are **manual** — something has to POST to `/check`. The next phase adds a
+**scheduler** (a background loop, later EventBridge + Lambda in AWS) that walks every
+active endpoint on an interval and calls this exact same `CheckEndpointHealth` function.
+The monitoring logic doesn't change — only *what triggers it* changes. That's why this
+function was built as a clean, self-contained entry point.
+
+---
+
+*End of Phase 2 Day 1 additions.*
