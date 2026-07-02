@@ -34,6 +34,7 @@ func main() {
 	}
 	log.Println("✅ Database connected successfully")
 
+	go StartScheduler()
 	router := gin.Default()
 
 	router.GET("/health", func(c *gin.Context) {
