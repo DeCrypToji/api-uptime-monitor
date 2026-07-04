@@ -110,6 +110,13 @@ func UpdateEndpointStatus(endpointID string, result *HealthCheckResult) error {
 }
 
 func CheckEndpointHealth(userID string, endpoint Endpoint) error {
+	// Read the previous health state BEFORE UpdateEndpointStatus overwrites it.
+	// This is what lets us detect a transition (healthy->down / down->healthy).
+	oldHealthy, err := getPreviousHealth(endpoint.ID)
+	if err != nil {
+		return fmt.Errorf("failed to read previous health: %v", err)
+	}
+
 	result, err := PerformHealthCheck(endpoint)
 	if err != nil {
 		return fmt.Errorf("health check failed: %v", err)
@@ -122,6 +129,9 @@ func CheckEndpointHealth(userID string, endpoint Endpoint) error {
 	if err := UpdateEndpointStatus(endpoint.ID, result); err != nil {
 		return fmt.Errorf("failed to update endpoint status: %v", err)
 	}
+
+	// Best-effort alerting: never fails the health check itself.
+	MaybeSendAlert(userID, endpoint, oldHealthy, result)
 
 	return nil
 }
