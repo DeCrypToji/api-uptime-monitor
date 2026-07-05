@@ -1194,3 +1194,241 @@ function was built as a clean, self-contained entry point.
 ---
 
 *End of Phase 2 Day 1 additions.*
+
+---
+
+## 9. AUTOMATIC SCHEDULER (Phase 2 Day 2)
+
+Day 1 made checks *possible* but *manual* — something had to POST to `/check`. Day 2 makes
+them *automatic*. This is the piece that turns the app from "a thing you can ask to check"
+into "a thing that watches your endpoints on its own."
+
+### 9.1 The file: `scheduler.go`
+
+Three functions:
+```
+StartScheduler()      → runs one pass immediately, then loops forever on a ticker
+getCheckInterval()    → reads CHECK_INTERVAL_SECONDS (default 60), returns a Duration
+runCheckPass()        → queries all active endpoints and checks each one
+```
+
+### 9.2 It runs as a background goroutine
+
+In `main.go`, one line — `go StartScheduler()` — placed just before the Gin router starts.
+The `go` keyword launches it on its own **goroutine** (a lightweight concurrent thread), so
+the scheduler loop and the HTTP server run side by side in the same process without blocking
+each other. The API answers requests while the scheduler independently ticks in the
+background.
+
+### 9.3 Why one pass runs immediately on boot
+
+This is the non-obvious part worth understanding. A Go `time.Ticker` does **not** fire
+immediately — its first tick lands only after one full interval elapses. So with a 60-second
+interval, a ticker-only design would boot and then do *nothing* for 60 seconds before the
+first check. To the operator watching logs, that looks dead-on-arrival.
+
+The fix: run one `runCheckPass()` immediately, *then* start the ticker loop.
+
+```go
+runCheckPass()              // cover the gap before the ticker's first tick
+ticker := time.NewTicker(interval)
+for range ticker.C {
+    runCheckPass()          // every interval thereafter
+}
+```
+
+So checks start *now*, not one interval from now. This is a general pattern with any
+interval timer: if you want "run now and then every N", you trigger once manually before
+entering the tick loop.
+
+### 9.4 runCheckPass: read first, then write
+
+```go
+// 1. SELECT all active endpoints, drain the cursor into a slice
+// 2. THEN loop the slice and run CheckEndpointHealth on each
+```
+
+The two steps are deliberately separate. We read the *entire* result set into memory
+**before** running any checks, because each check performs INSERTs and UPDATEs. Holding a
+`SELECT` cursor open while issuing writes on the same connection pool invites contention and
+subtle driver issues. Read fully, close the cursor, then write. This is a small habit that
+prevents a class of hard-to-reproduce database problems.
+
+### 9.5 Per-endpoint error isolation
+
+Inside the loop, if one endpoint's check errors, it's logged and the loop `continue`s to the
+next. One unreachable endpoint (or one bad row) never aborts the whole pass. A monitoring
+tool that stops monitoring *everything* because *one* thing broke would be worse than
+useless — resilience per item is the point.
+
+### 9.6 It reuses Day 1's logic verbatim
+
+The scheduler calls the exact same `CheckEndpointHealth(userID, endpoint)` the manual button
+calls. No monitoring logic was rewritten. The *only* difference: the scheduler reads
+`user_id` straight from the `endpoints` row, because a background job has no logged-in user
+and therefore no JWT. This is why Day 1's entry point was built self-contained — so a second
+caller could reuse it with zero changes.
+
+### 9.7 Proof it works, hands-off
+
+```bash
+docker exec postgres-uptime psql -U postgres -d uptime_monitor \
+  -c "SELECT COUNT(*) FROM health_checks;"
+```
+Run it twice, one interval apart. The count climbs on its own — no curl, no button. That
+autonomous growth *is* the feature.
+
+---
+
+## 10. EDGE-TRIGGERED ALERTING (Phase 2 Day 3)
+
+Day 3 stops the system merely *recording* down endpoints and makes it *notify* you. The
+whole design rests on one principle.
+
+### 10.1 Edge-triggered, not level-triggered
+
+- **Level-triggered** = alert based on the *current state*: "it's down → alert." Run every
+  30–60s, a down endpoint would fire an alert *every pass* — dozens per hour, identical.
+  That's alert fatigue; the real signal drowns in noise.
+- **Edge-triggered** = alert only on a *transition*, the moment state *changes*:
+  - healthy → down  ⟶  🔴 send DOWN alert
+  - down → healthy  ⟶  🟢 send RECOVERED alert
+  - healthy → healthy / down → down  ⟶  **silence**
+
+You alert on the *edge* (the change), not the *level* (the ongoing state). This is standard
+terminology in monitoring and hardware interrupt design — worth knowing by name.
+
+### 10.2 Detecting a transition needs the previous state
+
+To know state *changed*, you need the *old* value to compare against. It already exists:
+`endpoints.last_is_healthy` holds the prior verdict until `UpdateEndpointStatus` overwrites
+it. So the order in `CheckEndpointHealth` matters:
+
+```
+1. read old last_is_healthy   (getPreviousHealth) — BEFORE it's overwritten
+2. run the check
+3. save history + update snapshot
+4. compare old vs new → if changed, alert   (MaybeSendAlert)
+```
+
+Read the old state *before* step 3 overwrites it, or the comparison is impossible.
+
+### 10.3 The first-check edge case (NULL)
+
+A never-checked endpoint has `last_is_healthy = NULL`. The rule:
+- `NULL → down` : alert (it genuinely is down on first observation)
+- `NULL → healthy` : silent (no need to announce "it came up" on boot)
+
+Handled in `determineAlertType` by treating a `nil` previous pointer specially. Same
+nullable-pointer discipline as everywhere else.
+
+### 10.4 Record first, then send
+
+`MaybeSendAlert` writes the alert to `alert_events` with `is_sent = false` **before**
+attempting the Slack POST, then flips it to `true` only after the send succeeds. Why this
+order: if the send fails (Slack down, bad webhook), there's still a permanent audit record
+that the event happened. A design that sent first and recorded second would lose the event
+entirely on a send failure. The `alert_events` table even has a partial index on
+`WHERE is_sent = false` — the schema was built for a future retry job to find unsent alerts.
+
+### 10.5 Alerting never breaks the health check
+
+`MaybeSendAlert` returns nothing and swallows every error (logs, doesn't propagate). A failed
+Slack notification must **never** fail the health check that produced it. Monitoring
+integrity is more important than notification delivery. This is a deliberate reliability
+boundary: the core job (recording health) can't be taken down by a secondary concern
+(sending a message).
+
+### 10.6 Schema constraint drove the code
+
+`alert_events` has `CHECK (event_type IN ('endpoint_down','endpoint_recovered','slow_response'))`.
+We read this constraint *before* writing the INSERT, so the Go code emits exactly those
+strings. Checking the schema first (`\d alert_events`) meant the alerting code compiled and
+ran correctly on the first attempt — no constraint-violation round-trip. Schema-first
+discipline paying off.
+
+### 10.7 Webhook is nullable
+
+`users.slack_webhook_url` is nullable — a user who hasn't configured Slack has NULL. The code
+reads it as `*string`; if `nil` or empty, it logs "no webhook configured" and returns without
+crashing. The alert is still recorded; only the send is skipped. Nullable column → pointer →
+graceful skip.
+
+---
+
+## 11. FRONTEND: LIVE STATUS & MANUAL CHECK (Phase 2 Day 4)
+
+Day 4 is the first Phase 2 work that touches no Go. Everything the backend knew was invisible
+— readable only via curl and psql. Day 4 makes the dashboard *show* it. File:
+`frontend/src/pages/Dashboard.tsx`.
+
+### 11.1 The Check Now button
+
+Each endpoint card has a button that calls the existing `POST /api/v1/endpoints/:id/check`.
+Critically: the frontend does **not** run the check or touch the database — it *asks the
+backend* to, and the backend does the real work. The frontend is an untrusted client; it
+makes requests, the backend owns the data. (The frontend runs on the user's machine, where
+an attacker controls it — so it can never hold data access or credentials.)
+
+### 11.2 Re-fetch to defeat stale cache
+
+After the check POST succeeds, the handler calls `fetchEndpoints()` again. Reason: the React
+app holds a **cached copy** of server state (the `endpoints` array from page load). The check
+changed the database, but the browser's copy is now stale. Re-fetching pulls fresh server
+truth so the UI reflects reality. Without that one line, the check would run correctly but
+the screen would show old data — looking broken while working.
+
+### 11.3 Three-state status (the NULL echo)
+
+`last_is_healthy` can be `true`, `false`, or `null`. The badge honors all three:
+- `true` → ✅ Healthy
+- `false` → 🚨 Down
+- `null` → ⚪ Never checked
+
+`null` exists because of the Day 1 `*bool` decision: a never-checked endpoint is SQL NULL →
+Go nil pointer → JSON `null` → the UI must show "unknown," not "down." That's one backend
+decision echoing across four layers (DB → Go → JSON → React). The old dashboard's
+`!last_is_healthy` treated null as down, which was wrong; Day 4 fixes it in both the badge and
+the healthy/down stat counts (`=== true` / `=== false`, so null counts as neither).
+
+### 11.4 Two kinds of state: UI vs server
+
+The dashboard holds two categories of `useState`, and telling them apart is the core lesson:
+- **UI state** — `checkingId`, `flashingId`, `showAddForm`, `loading`. Local, ephemeral,
+  about how the app *feels*. Never leaves the browser.
+- **Cached server state** — `endpoints`. A copy of data that truly lives on the server, and
+  therefore can go stale and needs re-syncing.
+
+Knowing which bucket a piece of state is in tells you whether you must worry about staleness.
+
+### 11.5 checkingId vs flashingId — one concept per variable
+
+Two *separate* state variables, deliberately:
+- `checkingId` = "a check is in flight for this endpoint" → drives the button's "Checking…"
+  and its `disabled` guard.
+- `flashingId` = "a check just *finished* for this endpoint" → drives a ~1.5s blue ring on
+  the card, confirming the click worked even when the data looks unchanged.
+
+They represent *different moments* (in-progress vs just-completed), so they get *different
+state*. Cramming both into one variable would save a line and blur two concepts. Principle:
+**one piece of state represents one concept.**
+
+### 11.6 Ordering: flash fires AFTER the re-fetch
+
+In `handleCheckNow`, `setFlashingId(id)` comes *after* `await fetchEndpoints()`. The `await`
+guarantees the fresh data has landed before the flash fires. The flash is a *signal about the
+refreshed data* ("look, this card just updated"), so it must fire at the moment the new data
+is on screen — not before, when the card still shows stale values. Position relative to an
+`await` is a deliberate statement about guaranteed sequence.
+
+### 11.7 Known limitation logged here (see BUILD_LOG)
+
+The `disabled` button prevents re-clicking *only while a request is in flight*. For endpoints
+that respond near-instantly (e.g. `localhost/health` at microseconds), the button re-enables
+so fast it offers effectively no spam protection. Real protection would be backend rate
+limiting — because frontend guards are UX, not security (an attacker bypasses the button and
+hits the API directly). Logged as accepted technical debt, not fixed in Day 4.
+
+---
+
+*End of Phase 2 Days 2–4 additions.*

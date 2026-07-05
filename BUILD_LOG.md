@@ -277,3 +277,87 @@ column as nullable on both sides of the boundary.
 ---
 
 *Generated at the close of Phase 2 Day 1.*
+
+---
+
+# Phase 2 Days 2–4 — Addendum
+
+Days 2–4 went far more smoothly than Day 1 — a direct result of the discipline the Day 1
+postmortem established. Notably, **almost no self-inflicted cascade errors**: files were
+edited surgically, types stayed defined once, and schema was verified before writing INSERTs.
+The errors that did occur were genuine (environment, browser caching) rather than
+process-induced. This addendum records what was built, the few errors hit, and — importantly
+— the decisions and technical debt logged along the way.
+
+## Part 6 — What Was Built (Days 2–4)
+
+| Day | Feature | Files |
+|---|---|---|
+| 2 | Automatic scheduler — checks all active endpoints on an interval | `scheduler.go` (new), `main.go` (1 line) |
+| 3 | Edge-triggered Slack alerting on state change | `alerts.go` (new), `health_check.go` (modified) |
+| 4 | Frontend live status, Check Now button, confirmation flash | `frontend/src/pages/Dashboard.tsx` |
+
+All of Days 2–3 committed green. Day 4 completed and verified locally.
+
+## Part 7 — Error Log (Days 2–4)
+
+### D2-1. Database not running on restart (Genuine, environment)
+- **Symptom:** `Failed to connect to database: dial tcp 127.0.0.1:5432: connect: connection refused` on backend boot.
+- **Root cause:** The `postgres-uptime` container was stopped (machine restart between sessions). The backend has a hard dependency on the DB and `log.Fatalf`s if it can't connect.
+- **Fix:** `docker start postgres-uptime`, then relaunch backend.
+- **Lesson:** Dependencies start bottom-up: database → backend → frontend. `connection refused` specifically means "nothing is listening on that port" — i.e. the service isn't running — as opposed to `timed out` (something's there, not answering) or `no such host` (address won't resolve). Knowing which "can't connect" maps to which cause is 2am debugging fluency.
+
+### D3-1. Placeholder text saved as webhook URL (Self-inflicted, trivial)
+- **Symptom:** `Alert: failed to send Slack ... Post "PASTE_WEBHOOK_SITE_URL_HERE": unsupported protocol scheme ""`
+- **Root cause:** The `UPDATE users SET slack_webhook_url` command was run with the literal placeholder still in it, not a real URL. Go's HTTP client rejected a "URL" with no `https://` scheme.
+- **Fix:** Re-ran the UPDATE with a real webhook.site URL; verified with a follow-up SELECT before testing again.
+- **Lesson:** Confirmed the send path was actually working — it reached the POST attempt, proving everything up to the URL was correct. Verify inserted values (`SELECT` after `UPDATE`) before assuming a feature is broken. A copy-paste placeholder is not a logic bug.
+
+### D3-2. `is_sent` staying false (Diagnosed, not a bug)
+- **Symptom:** All `alert_events` rows showed `is_sent = f`.
+- **Root cause:** Same as D3-1 — the send never succeeded (bad webhook URL), so the row was never flipped to `is_sent = true`. The *recording* half of the pipeline worked; the *sending* half was failing on the URL.
+- **Fix:** Resolved by fixing the webhook URL (D3-1). After that, the newest row correctly showed `is_sent = t`.
+- **Lesson:** The record-first / send-second design did exactly its job — it preserved an honest audit trail of events that were detected but not delivered. `is_sent = false` rows are a feature (retry candidates), not corruption.
+
+### D4-1. Frontend button not reacting (Genuine, browser caching)
+- **Symptom:** After saving the new `Dashboard.tsx`, clicking Check Now did nothing visible — though backend logs showed the `POST /check` and re-fetch both returning 200.
+- **Root cause:** The browser was running a **stale cached copy** of the old Dashboard code; Vite's hot-reload hadn't fully applied. The backend was working perfectly — the disconnect was entirely browser-side.
+- **Diagnosis method:** `grep -c "handleCheckNow|Check Now|checkingId" Dashboard.tsx` returned `5`, proving the new code was on disk → eliminated "paste didn't land." No red TypeScript errors → eliminated compile failure. By elimination, the fault was stale browser code.
+- **Fix:** Hard refresh (`Ctrl+Shift+R`) to bypass cache and pull the current build.
+- **Lesson:** When backend logs prove the request succeeded but the UI doesn't change, the problem is frontend/caching, not logic. Debug by *elimination* — run the single check that rules out half the possibilities (here, `grep` for the new code) rather than guessing. Backend logs are the source of truth for whether a request actually happened.
+
+### Noise correctly ignored (a skill, not an error)
+Two log lines appeared during Days 2–4 that were *unrelated* to the problems being debugged and were correctly set aside:
+- `Alert: ... but no webhook configured` — expected behavior after the test webhook was nulled; nothing to do with the frontend button.
+- `DEP0060 DeprecationWarning: util._extend` — Vite's own internal Node deprecation nag; prints on nearly every project, not an error, not user code.
+- **Lesson:** Not every log line relates to the symptom under investigation. Distinguishing signal from noise — parking the irrelevant message instead of chasing it — is itself a senior debugging skill.
+
+## Part 8 — Decisions & Accepted Technical Debt (Days 2–4)
+
+### Decisions
+1. **Immediate boot pass before the ticker loop** (Day 2) — because `time.Ticker`'s first tick is delayed a full interval; without a manual first pass, the app appears dead for one interval on startup.
+2. **Read-all-then-check in the scheduler** (Day 2) — drain the endpoint SELECT into a slice before running checks, to avoid holding a read cursor open during writes.
+3. **Edge-triggered alerting** (Day 3) — alert only on state *transitions*, never on steady state, to prevent alert fatigue.
+4. **Record-before-send for alerts** (Day 3) — write `alert_events` with `is_sent=false` first, flip to true after a successful send, so events survive send failures.
+5. **Alerting is best-effort** (Day 3) — `MaybeSendAlert` swallows all errors; a failed notification must never fail the health check.
+6. **Separate `flashingId` from `checkingId`** (Day 4) — one state variable per concept ("in flight" vs "just completed"), rather than overloading one.
+7. **webhook.site before real Slack** (Day 3) — validate the alert *logic* against a visible test endpoint before introducing real Slack config, decoupling "is our logic right" from "is Slack set up right."
+
+### Accepted Technical Debt (logged, deliberately not fixed)
+1. **Fast-endpoint check-button spam** (Day 4) — the `disabled` guard only blocks re-clicks *while a request is in flight*. For near-instant endpoints (e.g. `localhost/health` at microseconds) the button re-enables too fast to prevent spam. Proper fix is **backend rate limiting**, since frontend guards are UX not security (an attacker bypasses the button and calls the API directly). Connected to the Security+ concept of *risk acceptance*: the risk is understood, low-impact for now, and consciously deferred rather than ignored.
+2. **Still-deferred from Day 1:** input-validation hardening, pagination, API docs, backend observability — unchanged, still scheduled.
+
+## Part 9 — Pattern Reinforcement
+
+Days 2–4 validated the Day 1 lessons under real conditions:
+- **Schema-first worked again.** Reading `\d alert_events` before writing the INSERT meant the `event_type` values matched the `CHECK` constraint on the first try — no round-trip.
+- **Surgical edits held.** No file was needlessly rebuilt; no type was redeclared; no signature-change cascade. The Day 1 mess did not recur.
+- **Nullable-as-pointer, everywhere.** The `*bool` / `*string` discipline handled never-checked endpoints (Day 4 three-state) and unconfigured webhooks (Day 3 skip) cleanly.
+- **Debug by elimination.** The frontend caching bug (D4-1) was cornered with a single `grep`, not guesswork.
+
+The throughline: the process discipline established by the Day 1 postmortem is what made Days
+2–4 fast and mostly error-free. The document worked.
+
+---
+
+*Generated at the close of Phase 2 Day 4.*
