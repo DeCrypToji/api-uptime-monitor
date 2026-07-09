@@ -1432,3 +1432,124 @@ hits the API directly). Logged as accepted technical debt, not fixed in Day 4.
 ---
 
 *End of Phase 2 Days 2–4 additions.*
+
+---
+
+## 12. CLOUD DEPLOYMENT: INFRASTRUCTURE FOUNDATION (Phase 3 Day 1)
+
+Phase 3 takes the app off the laptop and onto AWS, defined entirely as
+Infrastructure-as-Code (Terraform). This section covers the deployment approach and the
+networking foundation — the first two of eight deployment steps.
+
+### 12.1 Why Infrastructure-as-Code (Terraform)
+
+Every AWS resource is declared in `.tf` files, not clicked together in the console. Three
+payoffs:
+- **Reproducible** — the same config builds the same infrastructure every time. Tear it all
+  down with `terraform destroy`, rebuild in minutes with `terraform apply`. The *value* lives
+  in the `.tf` files (permanent, in git), not the running resources (disposable, billable).
+- **Reduces human error** — you're not hand-configuring resources in a console where a
+  mis-clicked checkbox becomes a security hole. You run a reviewed, repeatable plan. (This is
+  the real human-error reducer — distinct from "testing before deploying," which reduces bugs
+  reaching production. The `terraform plan` dry-run is the testing-before-deploying analogue.)
+- **Version-pinned** — provider versions are pinned (`~> 5.0`), so an AWS provider update
+  can't silently break the config. Same reproducibility-through-pinning principle as `go.sum`
+  and Docker version tags.
+
+### 12.2 The deployment sequence (8 steps, dependency-ordered)
+
+Built bottom-up so each layer introduces exactly one new thing that could break, and the
+expensive resources come last (after everything they depend on is proven):
+1. Terraform baseline (provider, versions) ✅
+2. Networking (VPC, subnets, security groups) ✅
+3. RDS PostgreSQL (in private subnets)
+4. ECR + push backend image
+5. EKS cluster + node group
+6. K8s manifests (Deployment, Service, Secrets)
+7. Ingress / LoadBalancer (public URL)
+8. Frontend (S3 + CloudFront) + teardown discipline
+
+The ordering is deliberate: if EKS were built first and the database networking were wrong,
+you'd pay for an idle cluster while debugging a lower layer. Cheap foundations first, verify
+each, light up the expensive things only when their dependencies are proven. This isolates
+failure to the most recent change *and* controls cost.
+
+### 12.3 The networking foundation (Step 2)
+
+Hand-written (not a community module) to force understanding of each resource. Deployed to
+`us-east-1`, ~$0 to run (you pay for things that *run* — compute, NAT — not for VPCs,
+subnets, route tables, or security groups).
+
+```
+VPC 10.0.0.0/16
+├── Public subnets  (10.0.1.0/24, 10.0.2.0/24)   — 2 AZs, route to internet
+│     → will hold: ALB, EKS nodes.  map_public_ip_on_launch = true
+├── Private subnets (10.0.10.0/24, 10.0.11.0/24) — 2 AZs, NO internet route
+│     → will hold: RDS database.    map_public_ip_on_launch = false
+├── Internet Gateway   — the single door to the internet for public subnets
+├── Public route table — 0.0.0.0/0 → IGW  (this route is what MAKES a subnet public)
+└── Security groups:
+      backend-sg  — inbound 8000 from anywhere, all outbound
+      database-sg — inbound 5432 ONLY from backend-sg (not an IP range)
+```
+
+### 12.4 What makes a subnet "private" — the routing, not a label
+
+A subnet is public or private purely because of its **route table**. Public subnets are
+associated with a route table containing `0.0.0.0/0 → internet gateway`. Private subnets have
+**no such association**, so there is no path to the internet — inbound or outbound. "Private"
+isn't a flag you set; it's the *absence of an internet route*. This is why the database's
+private subnets have no route table association in the config.
+
+### 12.5 The database security group — identity-based, not address-based
+
+The database SG's inbound rule uses `security_groups = [backend-sg.id]`, not
+`cidr_blocks = [...]`. The difference matters:
+- **IP-range based** (`cidr_blocks`) — "allow anything from these addresses." Brittle; IPs change.
+- **Identity based** (`security_groups`) — "allow anything that IS the backend, wherever it
+  runs." The rule follows the backend's identity, not its address.
+
+So the database accepts Postgres connections *only* from resources in the backend security
+group, on port 5432, and nothing else. In the Terraform plan this shows as
+`cidr_blocks = []` (no IP ranges allowed at all) with the backend SG as the only source. This
+is the "only the backend talks to the database" rule, enforced at the network layer.
+
+### 12.6 The three-tier security model, now as real infrastructure
+
+The public/private split *is* the three-tier trust model made concrete:
+- **Frontend** (Step 8: S3 + CloudFront) — fully public static files. No secrets (it runs on
+  the user's machine, i.e. the attacker's machine). Exposed by design.
+- **Backend API** (public subnets, behind ALB) — internet-*facing*, because the browser must
+  reach it — but *guarded* at every sensitive route by JWT auth. Exposed but locked.
+- **Database** (private subnets) — no internet route at all. Reachable only by the backend
+  inside the VPC. Genuinely isolated.
+
+Two *different* protection mechanisms for two tiers: **authentication** guards the backend
+(checks credentials); **network isolation** guards the database (restricts reachability). A
+load balancer is neither — it's traffic distribution, not a security control. Defense in
+depth: each tier is more locked down than the one in front of it.
+
+### 12.7 NAT Gateway — deliberately omitted
+
+The production pattern for private subnets to reach *out* to the internet uses a NAT Gateway
+(~$32/mo). Omitted here because the database only needs to talk to the backend *inside* the
+VPC — it has no reason to reach the public internet. Paying for a capability nothing in the
+stack needs would be waste. (Note: EKS worker nodes in private subnets sometimes need NAT to
+pull images/reach AWS APIs — to be revisited at Step 5 if it arises. The DB-to-backend link
+reasoned about here genuinely doesn't need it.)
+
+### 12.8 Verifying infrastructure — three levels of trust
+
+"Terraform said Apply complete" is a *claim*, not proof. Verified three independent ways:
+1. `terraform state list` — Terraform's own record of the 11 resources.
+2. `aws ec2 describe-vpcs` / `describe-subnets` — querying AWS directly, bypassing Terraform.
+3. Confirming the security-critical fields (private subnets `PublicIP: False`, DB SG
+   `cidr_blocks = []`) match intent — not just that resources exist, but that they're
+   configured correctly.
+
+"The tool reported success" and "I confirmed it's correct" are different levels of trust.
+Verifying against the source of truth (AWS itself) is the senior habit.
+
+---
+
+*End of Phase 3 Day 1 additions.*

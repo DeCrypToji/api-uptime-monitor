@@ -361,3 +361,81 @@ The throughline: the process discipline established by the Day 1 postmortem is w
 ---
 
 *Generated at the close of Phase 2 Day 4.*
+
+---
+
+# Phase 3 Day 1 — Cloud Deployment: Infrastructure Foundation
+
+First deployment session. Goal: take the app off the laptop and onto AWS, defined entirely as
+Terraform. Completed Steps 1–2 of an 8-step sequence (Terraform baseline + networking
+foundation), both deployed to `us-east-1` and verified. Cost so far: ~$0 (networking is free
+to run).
+
+## Part 10 — What Was Built (Phase 3 Day 1)
+
+| Step | Built | Verified |
+|---|---|---|
+| 1 | Terraform baseline: `provider.tf`, `versions.tf`, `variables.tf`; `terraform init` + `validate` | init + validate clean |
+| 2 | Networking: VPC, 2 public + 2 private subnets (2 AZs), IGW, public route table, backend SG, database SG (`network.tf`) | 11 resources, 3 independent ways |
+
+Files live in `~/project-2/infra/`, separate from application code.
+
+## Part 11 — Error Log (Phase 3 Day 1)
+
+### P3-1. Terraform "No valid credential sources found" (Genuine, WSL environment)
+- **Symptom:** `terraform plan` failed with `No valid credential sources found ... no EC2 IMDS role found ... context deadline exceeded` — despite `aws sts get-caller-identity` working moments earlier.
+- **Root cause:** WSL environment split. The **AWS CLI** in use was the *Windows* binary (PATH showed `/mnt/c/Program Files/Amazon/AWSCLIV2/`), reading Windows' credentials on the C: drive. **Terraform** is a *Linux-native* binary inside WSL, looking for credentials in WSL's `~/.aws/` or Linux env vars — neither existed. Same machine, two environments, two different credential homes.
+- **Diagnosis:** `cat ~/.aws/credentials` (missing), `env | grep AWS` (empty), and reading the PATH revealed the CLI was the Windows one. The "it works in the CLI" fact was misleading because the CLI wasn't the Linux tool Terraform is.
+- **Fix:** `aws configure` inside WSL to write a native `~/.aws/credentials` Linux Terraform can read. (User also rotated keys: deleted the old access key, generated and configured a fresh one — good credential hygiene.)
+- **Lesson:** "Installed and working" is not one fact — it depends on *which* binary in *which* environment. The `/mnt/c/` in the PATH was the tell. This is the same class of confusion as the region split below: two tools, two assumptions, confusing result.
+
+### P3-2. Empty verification output — CLI/Terraform region split (Genuine, config mismatch)
+- **Symptom:** `aws ec2 describe-vpcs`/`describe-subnets` returned nothing, even though Terraform reported 11 resources created.
+- **Root cause:** Region mismatch. Terraform's provider is set to `us-east-1` (in `provider.tf`), but the **AWS CLI's default region was `eu-central-1`** (Frankfurt). The verification commands queried Frankfurt and correctly found nothing — the infrastructure is in Virginia.
+- **Diagnosis:** `aws configure get region` returned `eu-central-1`. Forcing `--region us-east-1` immediately showed the `10.0.0.0/16` VPC. `terraform state list` (region-agnostic) confirmed all 11 resources existed — proving the deploy succeeded and the problem was purely the CLI looking in the wrong region.
+- **Fix:** `aws configure set region us-east-1` to align CLI with Terraform.
+- **Lesson:** Inconsistent configuration across tools is a real bug source — a *successful* deploy looked like a *failure* purely because two tools disagreed on region. Keeping the environment consistent eliminates a whole class of "it's there but I can't see it" confusion. Also: region is a real decision (latency, cost, GDPR data-residency) — us-east-1 chosen for learning/service-availability; eu-west-2 (London) would suit a UK production deployment better.
+
+### Method note: diagnosis by elimination (recurring skill)
+Both P3-1 and P3-2 "looked like" the infrastructure was broken; both were environment/config
+issues on the *tooling* side, not the deploy. In each case the fix came from a single
+disambiguating check (`terraform state list` to prove resources exist regardless of CLI
+config; `aws configure get region` to expose the mismatch) rather than assuming the worst.
+Same debug-by-elimination discipline as the Day 4 frontend caching bug.
+
+## Part 12 — Decisions (Phase 3 Day 1)
+
+1. **EKS/Kubernetes chosen deliberately** — for skill development in a targeted technology,
+   funded by expiring credits. Justified as cost-benefit (benefit: real K8s reps; cost:
+   credits that expire anyway), not "the spec said so."
+2. **NAT Gateway omitted** — the DB only talks to the backend inside the VPC; it has no need
+   to reach the internet, so ~$32/mo of NAT would be waste. (Revisit at EKS step if nodes
+   need it.)
+3. **Hand-write Terraform, not a community module** — chosen for the learning value of
+   confronting every resource, over the speed of a prebuilt module. (Distinct axis from the
+   NAT decision: *how you author* vs *what you build*.)
+4. **`us-east-1` region** — for service availability and tutorial-alignment during learning;
+   noted that eu-west-2 would be the real choice for a UK deployment.
+5. **Teardown discipline agreed** — with IaC, running infrastructure is disposable; value is
+   in the `.tf` files. Rule: don't start a billable, time-consuming step without time to
+   finish or tear down. (Networking is free, so left running between sessions.)
+
+## Part 13 — Accepted Technical Debt / Deferred (unchanged + new)
+- **New:** none introduced this session — the networking was built correctly and completely.
+- **Carried:** SAST/DAST/SCA security scanning to be added to CI/CD as a **dedicated DevSecOps
+  hardening phase** after deployment (DAST needs a running target; several scans are more
+  meaningful against live infra). Treated as first-class project work, not optional polish.
+- **Carried from Phase 2:** fast-endpoint check-button spam (needs backend rate limiting),
+  input-validation hardening, pagination, API docs, backend observability.
+
+## Part 14 — Restart Point
+- **Completed:** Steps 1–2 (Terraform baseline + networking), deployed to us-east-1, verified.
+- **Next:** Step 3 — RDS PostgreSQL into the private subnets, then apply `schema.sql`. **First
+  billable step** — start of a session with time to build, verify, and tear down.
+- **On resume, verify environment first:** `cd ~/project-2/infra && terraform state list`
+  (network still present) and `aws sts get-caller-identity` (creds live). Region now aligned
+  to us-east-1.
+
+---
+
+*Generated at the close of Phase 3 Day 1.*
