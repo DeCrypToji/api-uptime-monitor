@@ -88,7 +88,11 @@ resource "aws_eks_node_group" "main" {
   node_role_arn   = aws_iam_role.node.arn
   subnet_ids      = aws_subnet.private[*].id
 
-  instance_types = ["t3.small"]
+  launch_template {
+    id      = aws_launch_template.node.id
+    version = aws_launch_template.node.latest_version
+  }
+
 
   scaling_config {
     desired_size = 2
@@ -113,4 +117,32 @@ output "cluster_name" {
 
 output "cluster_endpoint" {
   value = aws_eks_cluster.main.endpoint
+}
+
+# ---------------------------------------------------------------------------
+# Launch template — the blueprint every node is built from.
+# We route the node group through this so we can attach backend-sg,
+# letting nodes (and the pods on them) reach RDS.
+#
+# CRITICAL: launch template security groups REPLACE the defaults EKS would
+# attach — they don't add to them. So we MUST explicitly include the cluster
+# security group, or nodes lose control-plane connectivity and go NotReady.
+# Three paths wired here: backend-sg (RDS) + cluster SG (control plane).
+# Outbound-to-internet is handled separately by the NAT route.
+# ---------------------------------------------------------------------------
+resource "aws_launch_template" "node" {
+  instance_type = "t3.small"
+  name_prefix = "${var.project_name}-node-"
+
+  vpc_security_group_ids = [
+    aws_security_group.backend.id,
+    aws_eks_cluster.main.vpc_config[0].cluster_security_group_id,
+  ]
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "${var.project_name}-node"
+    }
+  }
 }

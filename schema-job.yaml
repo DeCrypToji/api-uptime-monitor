@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: schema-load
+spec:
+  backoffLimit: 2          # retry at most twice on failure
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: psql
+          image: postgres:15-alpine   # provides the psql client
+          command: ["sh", "-c"]
+          args:
+            - psql "postgresql://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):5432/$(DB_NAME)?sslmode=require" -f /sql/schema.sql
+          env:
+            - name: DB_HOST
+              valueFrom: { secretKeyRef: { name: db-credentials, key: host } }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: db-credentials, key: username } }
+            - name: DB_NAME
+              valueFrom: { secretKeyRef: { name: db-credentials, key: dbname } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-credentials, key: password } }
+          volumeMounts:
+            - name: schema
+              mountPath: /sql
+      volumes:
+        - name: schema
+          configMap:
+            name: schema-sql
