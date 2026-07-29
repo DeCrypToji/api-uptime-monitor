@@ -146,3 +146,15 @@ resource "aws_launch_template" "node" {
     }
   }
 }
+
+# ---------------------------------------------------------------------------
+# PIECE 1: Pod Identity Agent add-on.
+# Runs as a DaemonSet (one per node). It's the broker: when a pod needs AWS
+# credentials, this agent checks the association and hands back temporary,
+# scoped credentials. Nothing else in Pod Identity works without it.
+# ---------------------------------------------------------------------------
+resource "aws_eks_addon" "pod_identity" {
+  cluster_name  = aws_eks_cluster.main.name
+  addon_name    = "eks-pod-identity-agent"
+  addon_version = "v1.3.0-eksbuild.1"
+}
