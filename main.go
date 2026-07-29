@@ -34,7 +34,9 @@ func main() {
 	}
 	log.Println("✅ Database connected successfully")
 
-	go StartScheduler()
+	if os.Getenv("RUN_SCHEDULER") != "false" {
+		go StartScheduler()
+	}
 	router := gin.Default()
 
 	router.GET("/health", func(c *gin.Context) {
@@ -74,13 +76,19 @@ func main() {
 }
 
 func initDB() (*sql.DB, error) {
+	sslmode := os.Getenv("DB_SSLMODE")
+	if sslmode == "" {
+		sslmode = "require" // RDS enforces TLS; local dev can override with DB_SSLMODE=disable
+	}
+
 	dsn := fmt.Sprintf(
-		"user=%s password=%s dbname=%s host=%s port=%s sslmode=disable",
+		"user=%s password=%s dbname=%s host=%s port=%s sslmode=%s",
 		os.Getenv("DB_USER"),
 		os.Getenv("DB_PASSWORD"),
 		os.Getenv("DB_NAME"),
 		os.Getenv("DB_HOST"),
 		os.Getenv("DB_PORT"),
+		sslmode,
 	)
 
 	db, err := sql.Open("postgres", dsn)

@@ -79,3 +79,6 @@ ENV/
 frontend/node_modules/
 frontend/dist/
 frontend/.env
+
+# Compiled binary
+api-uptime-monitor
