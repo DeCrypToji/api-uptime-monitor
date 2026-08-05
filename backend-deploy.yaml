@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      serviceAccountName: backend-sa        # Pod Identity: gives the pod its scoped IAM role
+      containers:
+        - name: backend
+          image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v2
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DB_HOST
+              value: "REPLACE_DB_HOST"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: "postgres"
+            - name: DB_NAME
+              value: "uptime_monitor"
+            - name: DB_SSLMODE
+              value: "require"
+            - name: DB_SECRET_NAME
+              value: "api-uptime-monitor-db-password"   # app fetches password from here
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: PORT
+              value: "8000"
+            # NOTE: no DB_PASSWORD — the app fetches it from Secrets Manager via Pod Identity
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 80
+      targetPort: 8000
+  type: ClusterIP
