@@ -1,26 +1,36 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend-sa
+---
+# ── API Deployment: serves HTTP, scheduler DISABLED, scalable ──
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: backend
+  name: backend-api
 spec:
-  replicas: 1
+  replicas: 2                          # scalable — no scheduler, so no duplication
   selector:
     matchLabels:
       app: backend
+      role: api
   template:
     metadata:
       labels:
         app: backend
+        role: api
     spec:
-      serviceAccountName: backend-sa        # Pod Identity: gives the pod its scoped IAM role
+      serviceAccountName: backend-sa
       containers:
         - name: backend
           image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v2
           ports:
             - containerPort: 8000
           env:
+            - name: RUN_SCHEDULER
+              value: "false"           # <-- API pods do NOT run the scheduler
             - name: DB_HOST
-              value: "REPLACE_DB_HOST"
+              value: "api-uptime-monitor-db.c8ngccckqxfr.us-east-1.rds.amazonaws.com"
             - name: DB_PORT
               value: "5432"
             - name: DB_USER
@@ -30,12 +40,11 @@ spec:
             - name: DB_SSLMODE
               value: "require"
             - name: DB_SECRET_NAME
-              value: "api-uptime-monitor-db-password"   # app fetches password from here
+              value: "api-uptime-monitor-db-password"
             - name: AWS_REGION
               value: "us-east-1"
             - name: PORT
               value: "8000"
-            # NOTE: no DB_PASSWORD — the app fetches it from Secrets Manager via Pod Identity
           readinessProbe:
             httpGet:
               path: /health
@@ -49,6 +58,48 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 15
 ---
+# ── Scheduler Deployment: runs checks, EXACTLY 1 replica ──
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-scheduler
+spec:
+  replicas: 1                          # exactly one — never duplicate checks/alerts
+  selector:
+    matchLabels:
+      app: backend
+      role: scheduler
+  template:
+    metadata:
+      labels:
+        app: backend
+        role: scheduler
+    spec:
+      serviceAccountName: backend-sa
+      containers:
+        - name: backend
+          image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v2
+          env:
+            - name: RUN_SCHEDULER
+              value: "true"            # <-- the ONE pod that runs the scheduler
+            - name: DB_HOST
+              value: "api-uptime-monitor-db.c8ngccckqxfr.us-east-1.rds.amazonaws.com"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: "postgres"
+            - name: DB_NAME
+              value: "uptime_monitor"
+            - name: DB_SSLMODE
+              value: "require"
+            - name: DB_SECRET_NAME
+              value: "api-uptime-monitor-db-password"
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: PORT
+              value: "8000"
+---
+# ── Service: routes traffic to the API pods only ──
 apiVersion: v1
 kind: Service
 metadata:
@@ -56,6 +107,7 @@ metadata:
 spec:
   selector:
     app: backend
+    role: api                          # <-- targets API pods ONLY, not the scheduler
   ports:
     - port: 80
       targetPort: 8000
