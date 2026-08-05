@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -78,13 +82,18 @@ func main() {
 func initDB() (*sql.DB, error) {
 	sslmode := os.Getenv("DB_SSLMODE")
 	if sslmode == "" {
-		sslmode = "require" // RDS enforces TLS; local dev can override with DB_SSLMODE=disable
+		sslmode = "require"
+	}
+
+	password, err := getDBPassword() // <-- fetch via env-var-or-Secrets-Manager
+	if err != nil {
+		return nil, fmt.Errorf("getting DB password: %w", err)
 	}
 
 	dsn := fmt.Sprintf(
 		"user=%s password=%s dbname=%s host=%s port=%s sslmode=%s",
 		os.Getenv("DB_USER"),
-		os.Getenv("DB_PASSWORD"),
+		password, // <-- use the fetched value
 		os.Getenv("DB_NAME"),
 		os.Getenv("DB_HOST"),
 		os.Getenv("DB_PORT"),
@@ -101,4 +110,40 @@ func initDB() (*sql.DB, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	return db, nil
+}
+
+func getDBPassword() (string, error) {
+	if pw := os.Getenv("DB_PASSWORD"); pw != "" {
+		log.Println("using DB password from DB_PASSWORD env var") // <-- ADD (env-var path)
+		return pw, nil
+	}
+
+	secretName := os.Getenv("DB_SECRET_NAME")
+	if secretName == "" {
+		return "", fmt.Errorf("neither DB_PASSWORD nor DB_SECRET_NAME is set")
+	}
+
+	log.Printf("fetching DB password from Secrets Manager (secret: %s)", secretName) // <-- ADD (Secrets Manager path)
+
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		return "", fmt.Errorf("loading AWS config: %w", err)
+	}
+
+	client := secretsmanager.NewFromConfig(cfg)
+	out, err := client.GetSecretValue(context.TODO(), &secretsmanager.GetSecretValueInput{
+		SecretId: &secretName,
+	})
+	if err != nil {
+		return "", fmt.Errorf("fetching secret %s: %w", secretName, err)
+	}
+
+	var secret struct {
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal([]byte(*out.SecretString), &secret); err != nil {
+		return "", fmt.Errorf("parsing secret JSON: %w", err)
+	}
+
+	return secret.Password, nil
 }
