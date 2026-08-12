@@ -16,9 +16,10 @@ COPY *.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o api-uptime-monitor .
 
 # Runtime stage
-FROM alpine:latest
+FROM alpine:3.21
 
 # Install ca-certificates for HTTPS
+# hadolint ignore=DL3018
 RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
@@ -31,7 +32,7 @@ EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --quiet --tries=1 --spider http://localhost:8000/health || exit 1
+    CMD ["wget", "--quiet", "--tries=1", "--spider", "http://localhost:8000/health"]
 
 # Run
 CMD ["./api-uptime-monitor"]
