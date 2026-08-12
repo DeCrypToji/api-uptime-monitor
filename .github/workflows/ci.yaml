@@ -71,7 +71,7 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
 
-lint-docker:
+  lint-docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
