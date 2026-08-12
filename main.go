@@ -73,7 +73,7 @@ func main() {
 		port = "8000"
 	}
 
-	log.Printf("🚀 Server starting on port %s\n", port)
+	log.Printf("🚀 Server starting on port %s\n", port) // #nosec G706 -- port is operator-set env var, not user input
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
@@ -123,7 +123,7 @@ func getDBPassword() (string, error) {
 		return "", fmt.Errorf("neither DB_PASSWORD nor DB_SECRET_NAME is set")
 	}
 
-	log.Printf("fetching DB password from Secrets Manager (secret: %s)", secretName) // <-- ADD (Secrets Manager path)
+	log.Printf("fetching DB password from Secrets Manager (secret: %s)", secretName) // #nosec G706 -- secretName is operator-set env var, not user input
 
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
