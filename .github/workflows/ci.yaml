@@ -100,4 +100,18 @@ jobs:
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
       - name: Run gosec (SAST)
         run: gosec ./...
+
+  scan-iac:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy config scan (IaC)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: './infra'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          trivyignores: 'infra/.trivyignore'
       

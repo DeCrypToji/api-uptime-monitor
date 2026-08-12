@@ -1,0 +1,20 @@
+# AVD-AWS-0039: EKS secrets encryption — requires KMS key, planned for hardening pass
+AVD-AWS-0039
+
+# AVD-AWS-0040: EKS public endpoint — deliberate, needed for kubectl access without VPN
+AVD-AWS-0040
+
+# AVD-AWS-0041: EKS public CIDR 0.0.0.0/0 — same as above, no VPN/bastion in learning setup
+AVD-AWS-0041
+
+# AVD-AWS-0104: Egress 0.0.0.0/0 — backend needs outbound (Secrets Manager, ECR, health checks); DB egress is low-risk (private subnet, no internet route)
+AVD-AWS-0104
+
+# AVD-AWS-0107: Backend ingress 0.0.0.0/0 — will be scoped to ALB SG when public exposure is added
+AVD-AWS-0107
+
+# AVD-AWS-0130: IMDSv2 not enforced — planned fix, requires terraform apply against live cluster
+AVD-AWS-0130
+
+# AVD-AWS-0164: Public subnets assign public IPs — by design (NAT gateway, future ALB require public subnets)
+AVD-AWS-0164
