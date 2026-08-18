@@ -1,0 +1,4 @@
+# Example JWT token in architecture documentation — not a live credential.
+# Token is a documentation illustration of the auth flow, expired, and only
+# valid against the app's signing secret which is not in the repo.
+daaffeeb80509c8223b5d66fa73cce45f04d249e:ARCHITECTURE_GUIDE.md:generic-api-key:188
