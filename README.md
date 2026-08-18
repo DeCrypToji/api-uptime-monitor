@@ -9,7 +9,7 @@ Built as a production-grade portfolio project demonstrating end-to-end cloud dep
 **Application:** Go (Gin), React/TypeScript (Vite), PostgreSQL
 **Infrastructure:** AWS (EKS, RDS, ECR, Secrets Manager, VPC), Terraform
 **Security:** EKS Pod Identity, IAM least-privilege, TLS-enforced DB, identity-based security groups
-**CI/CD:** GitHub Actions — govulncheck (reachability-gated), Trivy (informational SCA)
+**CI/CD:** GitHub Actions (8-job security pipeline, OIDC federation to AWS), ArgoCD (GitOps, two-repo, self-healing)
 **Containers:** Docker (multi-stage, Alpine-based), Kubernetes (Deployments, Services, Jobs, ServiceAccounts)
 
 ## Architecture
@@ -164,11 +164,12 @@ kubectl apply -f backend-deploy.yaml  # deploy API + scheduler + service
 **Working and deployed:**
 - Backend live on EKS (Pod Identity proven end-to-end, TLS-enforced DB connection)
 - API/Scheduler split architecture (scalable API, singular scheduler)
-- CI pipeline with govulncheck reachability gate and Trivy informational scanning
+- CI pipeline: 8 jobs with govulncheck reachability gate, Trivy informational, hadolint, gosec, Gitleaks, Trivy IaC
+- CD pipeline: OIDC-authenticated ECR push (no stored AWS keys) + config repo update
+- GitOps: ArgoCD with two-repo architecture (app repo + config repo), automated sync, self-healing, drift correction
 - 0 reachable vulnerabilities (govulncheck clean)
 
 **In progress:**
-- CD pipeline (GitHub OIDC federation — no stored keys)
 - Public exposure (Ingress/ALB, Route 53, ACM)
 - Observability (Prometheus, Grafana, Alertmanager)
 - Frontend cloud deployment (S3 + CloudFront)

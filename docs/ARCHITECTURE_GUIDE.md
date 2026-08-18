@@ -1,5 +1,7 @@
 # API Uptime Monitor — Complete Architecture Guide
 
+> **Scope note:** This guide covers the application architecture (auth, health checks, scheduler, alerting, database schema) as designed during the initial build phase. For the cloud deployment architecture (EKS, Pod Identity, Terraform IaC, CI/CD pipeline, ArgoCD GitOps), see the [README](../README.md).
+
 ## Table of Contents
 1. System Overview
 2. Data Flow (signup → dashboard)

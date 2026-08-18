@@ -3,7 +3,7 @@
 ## Setup
 
 ### Prerequisites
-- Go 1.21+
+- Go 1.25+
 - PostgreSQL 14+
 - AWS CLI (for RDS in production)
 - Git

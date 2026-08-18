@@ -1,5 +1,7 @@
 # API Uptime Monitor — Build Log & Error Postmortem
 
+> **Scope note:** This log covers errors and decisions through the initial build and early cloud deployment. Later debugging (SSL-mode mismatch, security-group boundaries, EKS AMI deprecation, CVE triage from 33 to 0 reachable) is documented in commit messages and the project README.
+
 **Project:** API Uptime Monitor (Solo Developer Edition)
 **Owner:** Janali Miller-Reid (DeCrypToji)
 **Stack:** Go (Gin) · React + TypeScript (Vite) · PostgreSQL · Docker · JWT · GitHub Actions
