@@ -15,13 +15,64 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var db *sql.DB
 
+var (
+	httpRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_requests_total",
+			Help: "Total number of HTTP requests by method, path, and status code",
+		},
+		[]string{"method", "path", "status"},
+	)
+
+	httpRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "HTTP request latency in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"method", "path"},
+	)
+
+	schedulerRunsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "scheduler_runs_total",
+			Help: "Total number of scheduler check cycles executed",
+		},
+	)
+
+	healthCheckResultsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "health_check_results_total",
+			Help: "Total health check results by status (up/down)",
+		},
+		[]string{"status"},
+	)
+)
+
 func init() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using environment variables")
+	}
+	prometheus.MustRegister(httpRequestsTotal)
+	prometheus.MustRegister(httpRequestDuration)
+	prometheus.MustRegister(schedulerRunsTotal)
+	prometheus.MustRegister(healthCheckResultsTotal)
+}
+
+func metricsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		duration := time.Since(start).Seconds()
+		status := fmt.Sprintf("%d", c.Writer.Status())
+		httpRequestsTotal.WithLabelValues(c.Request.Method, c.FullPath(), status).Inc()
+		httpRequestDuration.WithLabelValues(c.Request.Method, c.FullPath()).Observe(duration)
 	}
 }
 
@@ -41,8 +92,10 @@ func main() {
 	if os.Getenv("RUN_SCHEDULER") != "false" {
 		go StartScheduler()
 	}
-	router := gin.Default()
 
+	router := gin.Default()
+	router.Use(metricsMiddleware())                       // record metrics on every request
+	router.GET("/metrics", gin.WrapH(promhttp.Handler())) // expose metrics for Prometheus to scrape
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status": "ok",

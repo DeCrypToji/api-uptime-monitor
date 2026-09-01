@@ -7,13 +7,10 @@ import (
 	"time"
 )
 
-// StartScheduler runs health checks on all active endpoints at a fixed interval.
-// It runs one pass immediately, then repeats every CHECK_INTERVAL_SECONDS.
 func StartScheduler() {
 	interval := getCheckInterval()
 	log.Printf("⏱️  Scheduler started — interval %s", interval)
 
-	// Immediate first pass so we don't wait a full interval for the first check.
 	runCheckPass()
 
 	ticker := time.NewTicker(interval)
@@ -24,8 +21,6 @@ func StartScheduler() {
 	}
 }
 
-// getCheckInterval reads CHECK_INTERVAL_SECONDS from the environment,
-// defaulting to 60 seconds if unset or invalid.
 func getCheckInterval() time.Duration {
 	seconds := 60
 	if v := os.Getenv("CHECK_INTERVAL_SECONDS"); v != "" {
@@ -36,8 +31,8 @@ func getCheckInterval() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// runCheckPass queries every active endpoint and runs a health check on each.
 func runCheckPass() {
+	schedulerRunsTotal.Inc()
 	rows, err := db.Query(`
 		SELECT id, user_id, url, http_method, expected_status_code, name
 		FROM endpoints
@@ -49,8 +44,6 @@ func runCheckPass() {
 	}
 	defer rows.Close()
 
-	// Read everything first, THEN run checks — don't hold the read cursor
-	// open while doing INSERT/UPDATE writes.
 	type job struct {
 		userID   string
 		endpoint Endpoint
@@ -65,6 +58,11 @@ func runCheckPass() {
 			continue
 		}
 		jobs = append(jobs, job{userID: userID, endpoint: ep})
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("Scheduler: rows iteration error: %v", err)
+		return
 	}
 
 	if len(jobs) == 0 {

@@ -23,7 +23,7 @@ spec:
       serviceAccountName: backend-sa
       containers:
         - name: backend
-          image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v2
+          image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v4
           ports:
             - containerPort: 8000
           env:
@@ -78,7 +78,7 @@ spec:
       serviceAccountName: backend-sa
       containers:
         - name: backend
-          image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v2
+          image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v4
           env:
             - name: RUN_SCHEDULER
               value: "true"            # <-- the ONE pod that runs the scheduler
@@ -104,11 +104,30 @@ apiVersion: v1
 kind: Service
 metadata:
   name: backend
+  labels:
+    app: backend
 spec:
   selector:
     app: backend
     role: api                          # <-- targets API pods ONLY, not the scheduler
   ports:
-    - port: 80
+  - name: http
+    port: 80
+    targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-scheduler-metrics
+  labels:
+    app: backend-scheduler
+spec:
+  selector:
+    app: backend
+    role: scheduler
+  ports:
+    - name: http
+      port: 80
       targetPort: 8000
   type: ClusterIP

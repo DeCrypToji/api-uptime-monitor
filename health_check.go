@@ -28,6 +28,7 @@ func PerformHealthCheck(endpoint Endpoint) (*HealthCheckResult, error) {
 	if err != nil {
 		result.ErrorMessage = fmt.Sprintf("Failed to create request: %v", err)
 		result.IsHealthy = false
+		healthCheckResultsTotal.WithLabelValues("down").Inc()
 		result.ResponseTimeMs = int64(time.Since(startTime).Milliseconds())
 		return result, nil
 	}
@@ -38,6 +39,7 @@ func PerformHealthCheck(endpoint Endpoint) (*HealthCheckResult, error) {
 	if err != nil {
 		result.ErrorMessage = fmt.Sprintf("Request failed: %v", err)
 		result.IsHealthy = false
+		healthCheckResultsTotal.WithLabelValues("down").Inc()
 		result.ResponseTimeMs = responseTime.Milliseconds()
 		return result, nil
 	}
@@ -47,6 +49,7 @@ func PerformHealthCheck(endpoint Endpoint) (*HealthCheckResult, error) {
 	if err != nil {
 		result.ErrorMessage = fmt.Sprintf("Failed to read response: %v", err)
 		result.IsHealthy = false
+		healthCheckResultsTotal.WithLabelValues("down").Inc()
 		result.ResponseTimeMs = responseTime.Milliseconds()
 		return result, nil
 	}
@@ -54,7 +57,11 @@ func PerformHealthCheck(endpoint Endpoint) (*HealthCheckResult, error) {
 	result.StatusCode = resp.StatusCode
 	result.ResponseTimeMs = responseTime.Milliseconds()
 	result.IsHealthy = (resp.StatusCode == endpoint.ExpectedStatusCode)
-
+	if result.IsHealthy {
+		healthCheckResultsTotal.WithLabelValues("up").Inc()
+	} else {
+		healthCheckResultsTotal.WithLabelValues("down").Inc()
+	}
 	return result, nil
 }
 
