@@ -12,8 +12,12 @@ spec:
           image: postgres:15-alpine   # provides the psql client
           command: ["sh", "-c"]
           args:
-            - psql "postgresql://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):5432/$(DB_NAME)?sslmode=require" -f /sql/schema.sql
+            - >-
+              export PGPASSWORD="$DB_PASSWORD" &&
+              psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p 5432 -f /sql/schema.sql
           env:
+            - name: PGSSLMODE
+              value: "require"
             - name: DB_HOST
               valueFrom: { secretKeyRef: { name: db-credentials, key: host } }
             - name: DB_USER
