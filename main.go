@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -55,6 +56,37 @@ var (
 	)
 )
 
+var (
+	loginAttempts = make(map[string]int)
+	loginMutex    sync.Mutex
+)
+
+func rateLimitMiddleware(maxAttempts int) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		loginMutex.Lock()
+		count := loginAttempts[ip]
+		if count >= maxAttempts {
+			loginMutex.Unlock()
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many requests, try again later"})
+			c.Abort()
+			return
+		}
+		loginAttempts[ip]++
+		loginMutex.Unlock()
+
+		// Reset count after 15 minutes
+		go func() {
+			time.Sleep(15 * time.Minute)
+			loginMutex.Lock()
+			loginAttempts[ip]--
+			loginMutex.Unlock()
+		}()
+
+		c.Next()
+	}
+}
+
 func init() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using environment variables")
@@ -76,6 +108,17 @@ func metricsMiddleware() gin.HandlerFunc {
 	}
 }
 
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("X-XSS-Protection", "1; mode=block")
+		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		c.Header("Content-Security-Policy", "default-src 'self'")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Next()
+	}
+}
 func main() {
 	var err error
 	db, err = initDB()
@@ -94,7 +137,8 @@ func main() {
 	}
 
 	router := gin.Default()
-	router.Use(metricsMiddleware())                       // record metrics on every request
+	router.Use(metricsMiddleware())
+	router.Use(securityHeaders())                         // record metrics on every request
 	router.GET("/metrics", gin.WrapH(promhttp.Handler())) // expose metrics for Prometheus to scrape
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -105,8 +149,8 @@ func main() {
 
 	v1 := router.Group("/api/v1")
 	{
-		v1.POST("/auth/signup", signupHandler)
-		v1.POST("/auth/login", loginHandler)
+		v1.POST("/auth/signup", rateLimitMiddleware(10), signupHandler)
+		v1.POST("/auth/login", rateLimitMiddleware(10), loginHandler)
 		v1.POST("/auth/logout", authMiddleware(), logoutHandler)
 
 		v1.GET("/endpoints", authMiddleware(), getEndpointsHandler)
