@@ -1,0 +1,50 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: backend-alerts
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: backend.rules
+      rules:
+        # Pod restarting repeatedly — something is crashing
+        - alert: PodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace="default", container="backend"}[10m]) > 3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ $labels.pod }} is crash looping"
+            description: "Pod {{ $labels.pod }} has restarted more than 3 times in the last 10 minutes."
+
+        # High error rate — more than 10% of requests returning 5xx
+        - alert: HighErrorRate
+          expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High HTTP error rate"
+            description: "More than 10% of requests are returning 5xx errors."
+
+        # Scheduler stopped running — no check cycles for 5 minutes
+        - alert: SchedulerNotRunning
+          expr: increase(scheduler_runs_total[5m]) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Scheduler has stopped running"
+            description: "No scheduler check cycles detected in the last 5 minutes. Health checks are not being performed."
+
+        # Health checks returning mostly down results
+        - alert: HighHealthCheckFailureRate
+          expr: sum(rate(health_check_results_total{status="down"}[10m])) / sum(rate(health_check_results_total[10m])) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High health check failure rate"
+            description: "More than 50% of health checks are returning down status in the last 10 minutes."

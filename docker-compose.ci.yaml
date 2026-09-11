@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: testpassword
+      POSTGRES_DB: uptime_monitor
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: testpassword
+      DB_NAME: uptime_monitor
+      DB_SSLMODE: disable
+      JWT_SECRET: ci-test-secret
+      PORT: "8000"
+      RUN_SCHEDULER: "false"
+    depends_on:
+      db:
+        condition: service_healthy
