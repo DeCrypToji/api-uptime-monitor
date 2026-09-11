@@ -23,7 +23,7 @@ spec:
       serviceAccountName: backend-sa
       containers:
         - name: backend
-          image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v4
+          image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v5
           ports:
             - containerPort: 8000
           env:
@@ -78,7 +78,15 @@ spec:
       serviceAccountName: backend-sa
       containers:
         - name: backend
-          image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v4
+          image: 119750096239.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          env:
+            - name: RUN_SCHEDULER
+              value: "true"
           env:
             - name: RUN_SCHEDULER
               value: "true"            # <-- the ONE pod that runs the scheduler
@@ -115,11 +123,6 @@ spec:
     port: 80
     targetPort: 8000
   type: ClusterIP
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: backend-scheduler-metrics
   labels:
     app: backend-scheduler
 spec:

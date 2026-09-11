@@ -22,7 +22,9 @@ FROM alpine:3.21
 # hadolint ignore=DL3018
 RUN apk --no-cache add ca-certificates
 
-WORKDIR /root/
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+WORKDIR /home/appuser
 
 # Copy binary from builder
 COPY --from=builder /app/api-uptime-monitor .
@@ -33,6 +35,8 @@ EXPOSE 8000
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD ["wget", "--quiet", "--tries=1", "--spider", "http://localhost:8000/health"]
+
+USER appuser
 
 # Run
 CMD ["./api-uptime-monitor"]

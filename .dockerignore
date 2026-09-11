@@ -1,0 +1,16 @@
+.git
+.github
+node_modules
+frontend
+infra
+monitoring
+docs
+*.md
+*.tfstate
+*.tfstate.backup
+.terraform
+api-uptime-monitor
+bootstrap.sh
+.env
+.gitleaksignore
+.trivyignore
