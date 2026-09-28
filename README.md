@@ -8,10 +8,10 @@ Built as a production-grade portfolio project demonstrating end-to-end cloud dep
 
 **Application:** Go (Gin), React/TypeScript (Vite), PostgreSQL
 **Infrastructure:** AWS (EKS, RDS, ECR, Secrets Manager, VPC), Terraform
-**Security:** EKS Pod Identity, IAM least-privilege, TLS-enforced DB, identity-based security groups
+**Security:** Pod Identity, non-root containers, Network Policies, security headers, rate limiting, SAST + SCA + DAST
 **CI/CD:** GitHub Actions (9-job security pipeline with DAST, OIDC federation to AWS), ArgoCD (GitOps, two-repo, self-healing)
 **Observability:** Prometheus, Grafana, Alertmanager (custom application metrics + alert rules)
-**Security:** Pod Identity, non-root containers, Network Policies, security headers, rate limiting, SAST + SCA + DAST
+**Containers:** Docker (multi-stage, Alpine-based, non-root), Kubernetes (Deployments, Services, Jobs, ServiceAccounts, NetworkPolicies)
 
 ## Architecture
 
@@ -51,9 +51,9 @@ Built as a production-grade portfolio project demonstrating end-to-end cloud dep
 - **Identity-based security** — security groups reference other security groups (not IP ranges); pod credentials are scoped and temporary (Pod Identity); the CI pipeline will use OIDC federation (no stored keys). No long-lived static secrets anywhere.
 - **Three-tier network isolation** — public subnets (ALB/NAT), private subnets (EKS nodes, RDS). The database has no public endpoint and no internet route; reachable only from the backend security group.
 
-## CI Pipeline
+## CI/CD Pipeline
 
-The pipeline runs on every push to `main` and every PR. Security scanning uses a **two-tool strategy** gating on reachability, not mere presence:
+The pipeline runs on every push to `main` and every PR. Security scanning uses a **two-tool strategy** gating on reachability, not mere presence. Deployment uses OIDC federation — no stored AWS credentials.
 
 | Job | Tool | Purpose | Blocking? |
 |---|---|---|---|
@@ -61,35 +61,52 @@ The pipeline runs on every push to `main` and every PR. Security scanning uses a
 | `frontend` | Node 18 | npm install, build | Yes |
 | `vuln-reachable` | govulncheck | Fails if code **calls** a vulnerable function | **Yes — the real gate** |
 | `scan-image` | Trivy | Reports CVEs present in the container image | No — informational |
+| `lint-docker` | hadolint | Dockerfile best practices | Yes |
+| `secrets-scan` | Gitleaks | Detects committed secrets in git history | Yes |
+| `sast-go` | gosec | Static analysis for Go security bugs | Yes |
+| `scan-iac` | Trivy config | Terraform misconfiguration detection | Yes |
+| `dast` | OWASP ZAP | Dynamic security testing against running app | No — informational |
+| `deploy` | OIDC + ECR | Builds image, pushes to ECR, updates config repo | Only on main |
 
 **Why this design:** gating on presence (Trivy alone) breaks the pipeline every time the vulnerability database updates with CVEs in unreachable subpackages your code never calls. Gating on reachability (govulncheck) means a red pipeline signals a genuine, exploitable risk — keeping the blocking signal meaningful rather than training developers to ignore it.
+
+**CD flow:** on push to main, the deploy job authenticates to AWS via OIDC (temporary credentials, no stored keys), pushes the image to ECR with a commit-SHA tag, and updates the config repo. ArgoCD watches the config repo and auto-syncs the cluster — automated sync, self-healing, drift correction.
 
 ## Project Structure
 
 ```
-├── main.go                  # Entry point, DB init, Secrets Manager fetch, routes
+├── main.go                  # Entry point, DB init, Secrets Manager fetch, routes, Prometheus metrics
 ├── auth.go                  # JWT authentication (bcrypt, signed tokens)
 ├── handlers.go              # Endpoint CRUD handlers
-├── health_check.go          # HTTP health-check engine
-├── scheduler.go             # Background check loop (gated by RUN_SCHEDULER)
+├── health_check.go          # HTTP health-check engine + health check metrics
+├── scheduler.go             # Background check loop (gated by RUN_SCHEDULER) + scheduler metrics
 ├── alerts.go                # Edge-triggered Slack alerting
 ├── schema.sql               # PostgreSQL schema (8 tables)
-├── Dockerfile               # Multi-stage build (golang:1.25-alpine → alpine)
-├── backend-deploy.yaml      # K8s: ServiceAccount, API + Scheduler Deployments, Service
-├── schema-job.yaml          # K8s Job: loads schema into RDS
-├── infra/                   # Terraform (VPC, RDS, ECR, EKS, Pod Identity, NAT)
+├── Dockerfile               # Multi-stage build (golang:1.25-alpine → alpine, non-root user)
+├── .dockerignore            # Excludes .git, frontend, infra, node_modules from build context
+├── backend-deploy.yaml      # K8s: ServiceAccount, API + Scheduler Deployments, Services
+├── schema-job.yaml          # K8s Job: loads schema into RDS (PGPASSWORD, not URI)
+├── service-monitor.yaml     # Prometheus ServiceMonitor for API + scheduler scraping
+├── alert-rules.yaml         # Prometheus alert rules (CrashLoopBackOff, error rate, scheduler)
+├── network-policy.yaml      # K8s NetworkPolicies (egress/ingress restrictions)
+├── docker-compose.ci.yaml   # Docker Compose for DAST scanning in CI
+├── bootstrap.sh             # Post-rebuild automation (monitoring, schema, deploy)
+├── infra/                   # Terraform (VPC, RDS, ECR, EKS, Pod Identity, NAT, OIDC)
 │   ├── network.tf
 │   ├── database.tf
 │   ├── ecr.tf
 │   ├── eks.tf
 │   ├── nat.tf
 │   ├── pod-identity.tf
+│   ├── oidc.tf
 │   ├── provider.tf
 │   ├── variables.tf
 │   └── versions.tf
+├── monitoring/
+│   └── dashboard.json       # Exported Grafana dashboard (4 custom panels)
 ├── frontend/                # React/TypeScript dashboard (Vite)
 ├── .github/workflows/
-│   └── ci.yaml              # CI pipeline (govulncheck gate + Trivy informational)
+│   └── ci.yaml              # CI/CD pipeline (9 jobs + OIDC deploy)
 └── docs/
     ├── ARCHITECTURE_GUIDE.md
     ├── BUILD_LOG.md
@@ -133,24 +150,17 @@ The app defaults to secure settings (`DB_SSLMODE=require`, scheduler enabled). L
 
 ## Cloud Deployment
 
-Infrastructure is managed entirely via Terraform and rebuilds from code in ~25 minutes:
+Infrastructure is managed entirely via Terraform. Post-provisioning setup is automated via `bootstrap.sh`:
 
 ```bash
 cd infra
-terraform apply          # provisions VPC, RDS, ECR, EKS, Pod Identity, NAT
+terraform apply              # provisions VPC, RDS, ECR, EKS, Pod Identity, NAT, OIDC (~25 min)
 
-# Build and push the backend image
-aws ecr get-login-password --region us-east-1 | \
-  docker login --username AWS --password-stdin <account>.dkr.ecr.us-east-1.amazonaws.com
-docker build -t api-uptime-monitor-backend:v2 .
-docker tag api-uptime-monitor-backend:v2 <account>.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v2
-docker push <account>.dkr.ecr.us-east-1.amazonaws.com/api-uptime-monitor-backend:v2
-
-# Deploy to EKS
-aws eks update-kubeconfig --region us-east-1 --name api-uptime-monitor-cluster
-kubectl apply -f schema-job.yaml      # load schema into fresh RDS
-kubectl apply -f backend-deploy.yaml  # deploy API + scheduler + service
+cd ..
+./bootstrap.sh               # installs monitoring stack, loads schema, deploys backend
 ```
+
+In production, deployment is fully automated: push code → CI pipeline runs 9 security jobs → OIDC-authenticated ECR push → config repo updated → ArgoCD auto-deploys. No manual `kubectl apply` or image tagging required.
 
 ## Documentation
 
