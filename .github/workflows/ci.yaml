@@ -200,6 +200,8 @@ jobs:
           target: http://localhost:8000
           fail_action: warn
           cmd_options: '-a'
+          issue_title: ''
+          allow_issue_writing: false
 
       - name: Stop application
         if: always()
