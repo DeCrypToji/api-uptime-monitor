@@ -9,8 +9,9 @@ Built as a production-grade portfolio project demonstrating end-to-end cloud dep
 **Application:** Go (Gin), React/TypeScript (Vite), PostgreSQL
 **Infrastructure:** AWS (EKS, RDS, ECR, Secrets Manager, VPC), Terraform
 **Security:** EKS Pod Identity, IAM least-privilege, TLS-enforced DB, identity-based security groups
-**CI/CD:** GitHub Actions (8-job security pipeline, OIDC federation to AWS), ArgoCD (GitOps, two-repo, self-healing)
-**Containers:** Docker (multi-stage, Alpine-based), Kubernetes (Deployments, Services, Jobs, ServiceAccounts)
+**CI/CD:** GitHub Actions (9-job security pipeline with DAST, OIDC federation to AWS), ArgoCD (GitOps, two-repo, self-healing)
+**Observability:** Prometheus, Grafana, Alertmanager (custom application metrics + alert rules)
+**Security:** Pod Identity, non-root containers, Network Policies, security headers, rate limiting, SAST + SCA + DAST
 
 ## Architecture
 
@@ -163,13 +164,15 @@ kubectl apply -f backend-deploy.yaml  # deploy API + scheduler + service
 
 **Working and deployed:**
 - Backend live on EKS (Pod Identity proven end-to-end, TLS-enforced DB connection)
-- API/Scheduler split architecture (scalable API, singular scheduler)
-- CI pipeline: 8 jobs with govulncheck reachability gate, Trivy informational, hadolint, gosec, Gitleaks, Trivy IaC
+- API/Scheduler split architecture (scalable API tier, singular scheduler from one image)
+- CI pipeline: 9 jobs — govulncheck reachability gate, Trivy informational SCA, hadolint, gosec, Gitleaks, Trivy IaC, DAST (OWASP ZAP)
 - CD pipeline: OIDC-authenticated ECR push (no stored AWS keys) + config repo update
-- GitOps: ArgoCD with two-repo architecture (app repo + config repo), automated sync, self-healing, drift correction
+- GitOps: ArgoCD with two-repo architecture, automated sync, self-healing, drift correction
 - 0 reachable vulnerabilities (govulncheck clean)
+- Observability: Prometheus + Grafana + Alertmanager with custom application metrics (request rate, latency, scheduler runs, health check results), custom dashboard, and alert rules (CrashLoopBackOff, high error rate, scheduler-not-running, health check failure rate)
+- Security hardening: non-root container (readOnlyRootFilesystem, allowPrivilegeEscalation: false), Network Policies (egress/ingress restricted), security response headers (HSTS, CSP, X-Frame-Options), rate limiting on auth endpoints, .dockerignore (828MB → ~1MB build context)
 
 **In progress:**
 - Public exposure (Ingress/ALB, Route 53, ACM)
-- Observability (Prometheus, Grafana, Alertmanager)
 - Frontend cloud deployment (S3 + CloudFront)
+- lib/pq → pgx migration (unmaintained driver with unfixable CVEs)
