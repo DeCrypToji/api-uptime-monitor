@@ -177,4 +177,30 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add k8s/backend-deploy.yaml
-          git diff --cached --quiet || (git commit -m "deploy: update image to ${IMAGE_TAG}" && git push)   
+          git diff --cached --quiet || (git commit -m "deploy: update image to ${IMAGE_TAG}" && git push)
+
+  dast:
+    runs-on: ubuntu-latest
+    needs: [backend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start application
+        run: |
+          docker compose -f docker-compose.ci.yaml up -d --build
+          sleep 10
+          # Load schema
+          docker compose -f docker-compose.ci.yaml exec -T db psql -U postgres -d uptime_monitor -f /dev/stdin < schema.sql
+          # Verify app is running
+          curl -s http://localhost:8000/health | jq .
+
+      - name: Run OWASP ZAP API scan
+        uses: zaproxy/action-api-scan@v0.9.0
+        with:
+          target: http://localhost:8000
+          fail_action: warn
+          cmd_options: '-a'
+
+      - name: Stop application
+        if: always()
+        run: docker compose -f docker-compose.ci.yaml down
