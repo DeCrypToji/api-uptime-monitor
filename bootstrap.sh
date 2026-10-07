@@ -10,7 +10,22 @@ helm install monitoring prometheus-community/kube-prometheus-stack \
   --create-namespace \
   --set grafana.adminPassword=admin \
   --set alertmanager.enabled=true \
-  --set prometheus.prometheusSpec.retention=7d
+  --set prometheus.prometheusSpec.retention=7d 2>/dev/null || echo "Monitoring stack already installed"
+
+echo "=== Installing AWS Load Balancer Controller ==="
+VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=api-uptime-monitor-vpc" --query "Vpcs[0].VpcId" --output text)
+ALB_ROLE_ARN=$(cd ~/project-2/infra && terraform output -raw alb_controller_role_arn)
+
+helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
+helm repo update
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  --namespace kube-system \
+  --set clusterName=api-uptime-monitor-cluster \
+  --set serviceAccount.create=true \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
+  --set region=us-east-1 \
+  --set vpcId=$VPC_ID 2>/dev/null || echo "ALB controller already installed"
 
 echo "=== Loading schema prerequisites ==="
 DB_PASSWORD=$(aws secretsmanager get-secret-value \
@@ -35,9 +50,28 @@ echo "=== Deploying backend ==="
 kubectl apply -f backend-deploy.yaml
 kubectl apply -f service-monitor.yaml
 
+echo "=== Applying alert rules ==="
+kubectl apply -f alert-rules.yaml
+
+echo "=== Applying network policies ==="
+kubectl apply -f network-policy.yaml
+
 echo "=== Waiting for pods ==="
 kubectl wait --for=condition=ready pod -l app=backend --timeout=120s
 
-echo "=== Done. Port-forward commands: ==="
-echo "Grafana:  kubectl port-forward svc/monitoring-grafana -n monitoring 3000:80 &"
-echo "Backend:  kubectl port-forward svc/backend 8000:80 &"
+echo "=== Waiting for ALB controller ==="
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=aws-load-balancer-controller -n kube-system --timeout=60s
+
+echo "=== Applying Ingress ==="
+kubectl apply -f ingress.yaml
+
+echo "=== Done ==="
+echo ""
+echo "Port-forward commands:"
+echo "  Grafana:  kubectl port-forward svc/monitoring-grafana -n monitoring 3000:80 &"
+echo "  Backend:  kubectl port-forward svc/backend 8000:80 &"
+echo ""
+echo "Public URL: https://api.decryptoji.com/health"
+echo ""
+echo "Check ALB address:"
+echo "  kubectl get ingress backend-ingress"
