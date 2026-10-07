@@ -21,3 +21,9 @@ variable "db_username" {
   type        = string
   default     = "postgres"
 }
+
+variable "route53_zone_id" {
+  description = "Route 53 hosted zone ID for decryptoji.com"
+  type        = string
+  default     = "Z04510493HHDBR4BLVFYT"
+}
