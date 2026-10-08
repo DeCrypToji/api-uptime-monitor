@@ -75,3 +75,15 @@ echo "Public URL: https://api.decryptoji.com/health"
 echo ""
 echo "Check ALB address:"
 echo "  kubectl get ingress backend-ingress"
+
+echo "=== Uploading frontend to S3 ==="
+BUCKET=$(cd ~/project-2/infra && terraform output -raw frontend_bucket_name 2>/dev/null)
+if [ -n "$BUCKET" ]; then
+  aws s3 sync ~/project-2/frontend/dist/ s3://$BUCKET/ --delete \
+    --content-type "text/html" --exclude "*" --include "*.html"
+  aws s3 sync ~/project-2/frontend/dist/ s3://$BUCKET/ --delete \
+    --exclude "*.html"
+  echo "Frontend uploaded to s3://$BUCKET/"
+else
+  echo "WARNING: Could not get frontend bucket name — skipping upload"
+fi
