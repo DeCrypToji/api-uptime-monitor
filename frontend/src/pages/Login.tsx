@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import axios from 'axios'
+import api from '../api'
 
 interface LoginProps {
   setIsAuthenticated: (value: boolean) => void
@@ -20,7 +20,7 @@ export default function Login({ setIsAuthenticated }: LoginProps) {
     setLoading(true)
 
     try {
-      const response = await axios.post('/api/v1/auth/login', { email, password })
+      const response = await api.post('/api/v1/auth/login', { email, password })
       localStorage.setItem('jwt_token', response.data.jwt_token)
       localStorage.setItem('user_id', response.data.user_id)
       setIsAuthenticated(true)

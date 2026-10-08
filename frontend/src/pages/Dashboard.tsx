@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import axios from 'axios'
+import api from '../api'
 
 interface Endpoint {
   id: string
@@ -39,7 +39,7 @@ export default function Dashboard({ setIsAuthenticated }: DashboardProps) {
   const fetchEndpoints = async () => {
     try {
       const token = localStorage.getItem('jwt_token')
-      const response = await axios.get('/api/v1/endpoints', {
+      const response = await api.get('/api/v1/endpoints', {
         headers: { Authorization: `Bearer ${token}` },
       })
       setEndpoints(response.data || [])
@@ -67,7 +67,7 @@ export default function Dashboard({ setIsAuthenticated }: DashboardProps) {
         http_method: formData.http_method,
         expected_status_code: parseInt(formData.expected_status_code, 10),
       }
-      await axios.post('/api/v1/endpoints', payload, {
+      await api.post('/api/v1/endpoints', payload, {
         headers: { Authorization: `Bearer ${token}` },
       })
       setFormData({ url: '', http_method: 'GET', expected_status_code: '200', name: '' })
@@ -83,7 +83,7 @@ export default function Dashboard({ setIsAuthenticated }: DashboardProps) {
     setCheckingId(id)
     try {
       const token = localStorage.getItem('jwt_token')
-      await axios.post(`/api/v1/endpoints/${id}/check`, null, {
+      await api.post(`/api/v1/endpoints/${id}/check`, null, {
         headers: { Authorization: `Bearer ${token}` },
       })
       await fetchEndpoints()

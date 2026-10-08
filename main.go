@@ -119,6 +119,22 @@ func securityHeaders() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "https://decryptoji.com")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Header("Access-Control-Allow-Credentials", "true")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
+}
 func main() {
 	var err error
 	db, err = initDB()
@@ -139,6 +155,7 @@ func main() {
 	router := gin.Default()
 	router.Use(metricsMiddleware())
 	router.Use(securityHeaders())                         // record metrics on every request
+	router.Use(corsMiddleware())                          // add CORS headers
 	router.GET("/metrics", gin.WrapH(promhttp.Handler())) // expose metrics for Prometheus to scrape
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
