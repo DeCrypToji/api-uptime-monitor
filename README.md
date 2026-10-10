@@ -12,6 +12,7 @@ Built as a production-grade portfolio project demonstrating end-to-end cloud dep
 **CI/CD:** GitHub Actions (9-job security pipeline with DAST, OIDC federation to AWS), ArgoCD (GitOps, two-repo, self-healing)
 **Observability:** Prometheus, Grafana, Alertmanager (custom application metrics + alert rules)
 **Containers:** Docker (multi-stage, Alpine-based, non-root), Kubernetes (Deployments, Services, Jobs, ServiceAccounts, NetworkPolicies)
+**Frontend Hosting:** S3, CloudFront (HTTPS, OAC), Route 53
 
 ## Architecture
 
@@ -154,13 +155,15 @@ Infrastructure is managed entirely via Terraform. Post-provisioning setup is aut
 
 ```bash
 cd infra
-terraform apply              # provisions VPC, RDS, ECR, EKS, Pod Identity, NAT, OIDC (~25 min)
+terraform apply              # provisions VPC, RDS, ECR, EKS, Pod Identity, NAT, OIDC, ACM, ALB IAM (~25 min)
 
 cd ..
-./bootstrap.sh               # installs monitoring stack, loads schema, deploys backend
+./bootstrap.sh               # installs monitoring + ALB controller, loads schema, deploys backend, applies Ingress
 ```
 
-In production, deployment is fully automated: push code → CI pipeline runs 9 security jobs → OIDC-authenticated ECR push → config repo updated → ArgoCD auto-deploys. No manual `kubectl apply` or image tagging required.
+**Teardown** uses `Tdestroy.sh`, which deletes the Ingress first (triggering ALB cleanup by the controller), then runs targeted `terraform destroy` on billable resources, and verifies no orphaned ALBs or target groups remain.
+
+**Frontend** is deployed independently via S3 + CloudFront — `npm run build` then `aws s3 sync` to the frontend bucket. CloudFront and S3 persist across cluster teardowns.
 
 ## Documentation
 
@@ -173,16 +176,17 @@ In production, deployment is fully automated: push code → CI pipeline runs 9 s
 ## Current Status
 
 **Working and deployed:**
-- Backend live on EKS (Pod Identity proven end-to-end, TLS-enforced DB connection)
+- **Frontend** live at `https://decryptoji.com` (S3 + CloudFront, ACM TLS, Origin Access Control)
+- **Backend API** live at `https://api.decryptoji.com` (ALB + ACM TLS, Kubernetes Ingress, CORS locked to frontend origin)
 - API/Scheduler split architecture (scalable API tier, singular scheduler from one image)
 - CI pipeline: 9 jobs — govulncheck reachability gate, Trivy informational SCA, hadolint, gosec, Gitleaks, Trivy IaC, DAST (OWASP ZAP)
 - CD pipeline: OIDC-authenticated ECR push (no stored AWS keys) + config repo update
 - GitOps: ArgoCD with two-repo architecture, automated sync, self-healing, drift correction
 - 0 reachable vulnerabilities (govulncheck clean)
 - Observability: Prometheus + Grafana + Alertmanager with custom application metrics (request rate, latency, scheduler runs, health check results), custom dashboard, and alert rules (CrashLoopBackOff, high error rate, scheduler-not-running, health check failure rate)
-- Security hardening: non-root container (readOnlyRootFilesystem, allowPrivilegeEscalation: false), Network Policies (egress/ingress restricted), security response headers (HSTS, CSP, X-Frame-Options), rate limiting on auth endpoints, .dockerignore (828MB → ~1MB build context)
+- Security hardening: non-root container (readOnlyRootFilesystem, allowPrivilegeEscalation: false), Network Policies (egress/ingress restricted), security response headers (HSTS, CSP, X-Frame-Options), rate limiting on auth endpoints, CORS policy, .dockerignore (828MB → ~1MB build context)
 
-**In progress:**
-- Public exposure (Ingress/ALB, Route 53, ACM)
-- Frontend cloud deployment (S3 + CloudFront)
-- lib/pq → pgx migration (unmaintained driver with unfixable CVEs)
+**Future improvements:**
+- lib/pq → pgx migration (unmaintained Postgres driver with unfixable CVEs)
+- Grafana dashboard auto-import via Helm values or ConfigMap
+- ArgoCD + monitoring stack in Terraform (Helm provider) to eliminate manual bootstrap
